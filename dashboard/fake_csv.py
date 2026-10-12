@@ -9,6 +9,9 @@ import os
 import numpy as np
 import pandas as pd
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.abspath(os.path.join(HERE, "..", "data"))
+
 rng = np.random.default_rng(1)
 n = 300
 ref = 600 + rng.normal(0, 3, n)                  # reference cell, roughly constant
@@ -17,6 +20,7 @@ dusty = ref * true_T + rng.normal(0, 4, n)       # dusty cell
 glitch = rng.random(n) < 0.02                    # a few random sensor glitches
 dusty[glitch] = rng.uniform(300, 650, glitch.sum())
 
-os.makedirs("data", exist_ok=True)
-pd.DataFrame({"a0": dusty.round(1), "a1": ref.round(1)}).to_csv("data/fake_run.csv", index=False)
-print("Saved data/fake_run.csv")
+os.makedirs(DATA_DIR, exist_ok=True)
+output = os.path.join(DATA_DIR, "fake_run.csv")
+pd.DataFrame({"a0": dusty.round(1), "a1": ref.round(1)}).to_csv(output, index=False)
+print(f"Saved {output}")

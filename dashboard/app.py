@@ -104,9 +104,6 @@ html, body, .stApp, p, label, h1, h2, h3, h4, li, input, textarea { font-family:
 }
 header[data-testid="stHeader"] { background: transparent; }
 .stAppDeployButton, #MainMenu, [data-testid="stMainMenu"] { display: none; }
-/* hide every scroll bar but keep scrolling working */
-* { scrollbar-width: none; -ms-overflow-style: none; }
-*::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .block-container { padding-top: 3rem; max-width: 1400px; }
 section[data-testid="stSidebar"] > div {
   background: rgba(8,12,28,.72); backdrop-filter: blur(12px);
@@ -167,7 +164,8 @@ if mode == "Simulator":
     else:
         hour = st.sidebar.slider("Current hour", 20, 353, 150)
 
-csv_path = st.sidebar.text_input("CSV file (replay)", "data/fake_run.csv")
+default_csv_path = str(HERE.parent / "data" / "fake_run.csv")
+csv_path = st.sidebar.text_input("CSV file (replay)", default_csv_path)
 port = st.sidebar.text_input("Serial port (live)", "COM3")
 
 if st.sidebar.button("Reset replay / live history"):
@@ -251,9 +249,13 @@ def panel():
     filt = b.filter_series(raw)                 # teammate: noise filter
     t_now = float(filt.iloc[-1])
     hours_left = float(b.predict_hours(filt))   # teammate: random forest forecast
-    status = b.decide(t_now, hours_left)        # teammate: scheduler
     glitches = int((abs(raw - filt) > 0.1).sum())
     light_lost = max(0.0, 1 - t_now) * 100
+    status = b.decide(t_now, hours_left)        # teammate: scheduler
+    if t_now <= 0.85:
+        status = "CLEAN_NOW"
+    elif t_now <= 0.90:
+        status = "WARN"
 
     css_class, message = STATUS_UI.get(status, ("ok", status))
     st.markdown(
@@ -263,7 +265,7 @@ def panel():
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Current T", f"{t_now:.3f}")
-    c2.metric("Hours to limit", f"{hours_left:.0f} h")
+    c2.metric(f"Hours to {b.MODEL_TARGET_TEXT}", f"{hours_left:.0f} h")
     c3.metric("Light lost to dust", f"{light_lost:.1f} %")
     c4.metric("Glitches ignored", glitches)
 
