@@ -9,6 +9,7 @@ background instead of the built-in space scene.
 import base64
 import pathlib
 import random
+import re
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -104,11 +105,7 @@ html, body, .stApp, p, label, h1, h2, h3, h4, li, input, textarea { font-family:
 }
 header[data-testid="stHeader"] { background: transparent; }
 .stAppDeployButton, #MainMenu, [data-testid="stMainMenu"] { display: none; }
-.block-container { padding-top: 3rem; max-width: 1400px; }
-section[data-testid="stSidebar"] > div {
-  background: rgba(8,12,28,.72); backdrop-filter: blur(12px);
-  border-right: 1px solid rgba(148,163,184,.18);
-}
+.block-container { padding-top: 2.5rem; max-width: 1600px; }
 div[data-testid="stMetric"], div[data-testid="stPlotlyChart"], .card {
   background: rgba(10,16,36,.58); backdrop-filter: blur(10px);
   border: 1px solid rgba(148,163,184,.2); border-radius: 16px; padding: 14px 18px;
@@ -131,81 +128,120 @@ div[data-testid="stMetricValue"] { font-weight: 700; }
 .small { color:#9fb3d1; font-size:.9rem; margin-top:.4rem; }
 .key { color:#cbd5e1; font-size:.95rem; line-height:1.6; margin-top:.8rem; }
 .sw { display:inline-block; width:1.4rem; height:.28rem; border-radius:2px; margin-right:.4rem; vertical-align:middle; }
+.header-status { color:#91a4c0; font-size:.78rem; letter-spacing:.04em; text-align:right; margin-top:.5rem; }
+div[data-testid="stRadio"] div[role="radiogroup"] { justify-content:flex-end; gap:.35rem; }
+div[data-testid="stRadio"] div[role="radiogroup"] label {
+    background:rgba(15,23,42,.7); border:1px solid rgba(56,189,248,.3);
+    border-radius:999px; padding:.35rem .75rem; color:#a9bdd7;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] label:has(input:checked) {
+    background:rgba(14,116,144,.45); border-color:#38bdf8;
+    box-shadow:0 0 16px rgba(56,189,248,.35); color:#e0f2fe;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] label > div:first-child { display:none; }
+div[data-testid="stButton"] button {
+    border:1px solid #38bdf8; border-radius:999px; background:rgba(8,47,73,.65);
+    color:#e0f2fe; box-shadow:0 0 16px rgba(56,189,248,.2); font-weight:700;
+}
+div[data-testid="stButton"] button:hover { border-color:#7dd3fc; box-shadow:0 0 22px rgba(56,189,248,.45); color:white; }
 @media (prefers-reduced-motion: reduce) { .pill .dot { animation: none; } }
 </style>
 """
 st.markdown(CSS.replace("__BG__", background_url()), unsafe_allow_html=True)
 
-st.markdown(
-    '<div class="brand">Dustinel</div>'
-    '<div class="tag">Tells a lunar base exactly when to clean its solar panels.</div>',
-    unsafe_allow_html=True,
-)
-
-# ======================================================================
-# SIDEBAR
-# ======================================================================
-st.sidebar.header("Controls")
-mode = st.sidebar.radio("Data source", ["Simulator", "CSV replay", "Live Arduino"])
-dust_rate = st.sidebar.slider("Dust rate", 0.3, 3.0, 1.0)
-noise = st.sidebar.slider("Sensor noise", 0.005, 0.05, 0.02)
+header_title, header_source, header_refresh = st.columns([2.4, 1.5, .7])
+with header_title:
+    st.markdown(
+        '<div class="brand">Dustinel</div>'
+        '<div class="tag">Tells a lunar base exactly when to clean its solar panels.</div>',
+        unsafe_allow_html=True,
+    )
+with header_source:
+    mode = st.radio(
+        "Data source", ["CSV Replay", "Live Arduino"], index=0,
+        horizontal=True, label_visibility="collapsed",
+    )
+    model_label = "ONLINE" if b.USING_REAL.get("duramat_model") else "FALLBACK"
+    st.markdown(f'<div class="header-status">Model: {model_label} | Target: T = 0.85</div>', unsafe_allow_html=True)
+with header_refresh:
+    refresh_clicked = st.button("Refresh", icon=":material/refresh:", use_container_width=True)
 
 if "hist" not in st.session_state:
     st.session_state.hist = []      # live readings
-    st.session_state.pos = 10       # CSV replay position
-    st.session_state.play_hour = 20  # simulator "play" position
-
-play = False
-hour = None
-if mode == "Simulator":
-    play = st.sidebar.toggle("Play live simulation", value=False)
-    if play:
-        st.sidebar.caption("Dust builds up one hour per second.")
-    else:
-        hour = st.sidebar.slider("Current hour", 20, 353, 150)
+    st.session_state.pos = 0        # CSV replay position
 
 default_csv_path = str(HERE.parent / "data" / "fake_run.csv")
-csv_path = st.sidebar.text_input("CSV file (replay)", default_csv_path)
-port = st.sidebar.text_input("Serial port (live)", "COM3")
+csv_path = default_csv_path
+port = None
 
-if st.sidebar.button("Reset replay / live history"):
+if refresh_clicked:
     st.session_state.hist = []
-    st.session_state.pos = 10
-    st.session_state.play_hour = 20
-
-if st.sidebar.button("Run dust shield (EDS)"):
-    st.session_state.hist = []
-    st.session_state.pos = 10
-    st.session_state.play_hour = 20
-    st.toast("Dust shield ran. Panel is clean again.", icon="🧹")
-
-real = [k for k, v in b.USING_REAL.items() if v]
-st.sidebar.caption(f"Teammate code loaded: {', '.join(real) or 'none yet (stand-ins)'}")
+    st.session_state.pos = 0
+    if "ser" in st.session_state:
+        try:
+            st.session_state.ser.close()
+        except Exception:
+            pass
+        del st.session_state.ser
+    st.rerun()
 
 
 # ======================================================================
 # DATA SOURCES
 # ======================================================================
 def read_arduino():
-    """Read one 'A0,A1' line from the Arduino and return T = dusty / reference."""
+    """Read available Arduino lines and return valid ratio values."""
     import serial
+    from serial.tools import list_ports
+
+    def find_port():
+        available = list(list_ports.comports())
+        usb_ports = [
+            item.device for item in available
+            if "USB" in item.description.upper() or "ARDUINO" in item.description.upper()
+        ]
+        if usb_ports:
+            return usb_ports[0]
+        if any(item.device == "COM3" for item in available):
+            return "COM3"
+        raise RuntimeError("No USB serial device found")
+
     if "ser" not in st.session_state:                     # open the port once
-        st.session_state.ser = serial.Serial(port, 9600, timeout=2)
-    line = st.session_state.ser.readline().decode(errors="ignore").strip()
-    try:
-        a0, a1 = map(float, line.split(","))
-        return a0 / a1 if a1 > 0 else None
-    except ValueError:
+        st.session_state.serial_port = find_port()
+        st.session_state.ser = serial.Serial(st.session_state.serial_port, 9600, timeout=0.2)
+
+    def parse_line(line):
+        if "," in line:
+            try:
+                a0, a1 = map(float, line.split(","))
+                return a0 / a1 if a1 > 0 else None
+            except (TypeError, ValueError, ZeroDivisionError):
+                return None
+        match = re.search(r"\bT\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*%", line, re.IGNORECASE)
+        if match:
+            return float(match.group(1)) / 100.0
         return None
+
+    readings = []
+    serial_device = st.session_state.ser
+    for _ in range(100):
+        if not serial_device.in_waiting:
+            break
+        line = serial_device.readline().decode(errors="ignore").strip()
+        value = parse_line(line)
+        if value is not None:
+            readings.append(value)
+    if not readings:
+        line = serial_device.readline().decode(errors="ignore").strip()
+        value = parse_line(line)
+        if value is not None:
+            readings.append(value)
+    return readings
 
 
 def get_raw():
     """Return the raw T readings as a pandas Series, from whichever source is chosen."""
-    if mode == "Simulator":
-        n = st.session_state.play_hour if play else hour
-        return b.simulate_day(dust_rate, noise).raw_T.iloc[:n].reset_index(drop=True)
-
-    if mode == "CSV replay":
+    if mode == "CSV Replay":
         try:
             df = pd.read_csv(csv_path)                    # needs columns: a0,a1
         except FileNotFoundError:
@@ -217,12 +253,12 @@ def get_raw():
 
     # Live Arduino
     try:
-        t = read_arduino()
+        readings = read_arduino()
     except Exception as e:
-        st.error(f"Arduino not reachable on {port}: {e}")
+        active_port = st.session_state.get("serial_port", "auto-detect")
+        st.error(f"Arduino not reachable on {active_port}: {e}")
         return pd.Series(dtype=float)
-    if t is not None:
-        st.session_state.hist.append(t)
+    st.session_state.hist.extend(readings)
     return pd.Series(st.session_state.hist, dtype=float)
 
 
@@ -236,11 +272,8 @@ STATUS_UI = {
 # ======================================================================
 # THE LIVE PANEL (refreshes every second when something is "live")
 # ======================================================================
-@st.fragment(run_every=1 if (mode != "Simulator" or play) else None)
+@st.fragment(run_every=1)
 def panel():
-    if mode == "Simulator" and play:                      # move time forward
-        st.session_state.play_hour = min(st.session_state.play_hour + 1, 353)
-
     raw = get_raw()
     if len(raw) < 3:
         st.info("Waiting for data...")
@@ -249,7 +282,6 @@ def panel():
     filt = b.filter_series(raw)                 # teammate: noise filter
     t_now = float(filt.iloc[-1])
     hours_left = float(b.predict_hours(filt))   # teammate: random forest forecast
-    glitches = int((abs(raw - filt) > 0.1).sum())
     light_lost = max(0.0, 1 - t_now) * 100
     status = b.decide(t_now, hours_left)        # teammate: scheduler
     if t_now <= 0.85:
@@ -263,11 +295,10 @@ def panel():
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     c1.metric("Current T", f"{t_now:.3f}")
-    c2.metric(f"Hours to {b.MODEL_TARGET_TEXT}", f"{hours_left:.0f} h")
+    c2.metric(f"Days to {b.MODEL_TARGET_TEXT}", f"{hours_left / 24:.1f} days")
     c3.metric("Light lost to dust", f"{light_lost:.1f} %")
-    c4.metric("Glitches ignored", glitches)
 
     left, right = st.columns([3, 1.2])
     with left:
@@ -325,4 +356,3 @@ def panel():
 
 panel()
 
-st.caption("Prototype: talc is not charged lunar dust, and simulation parameters are illustrative.")
