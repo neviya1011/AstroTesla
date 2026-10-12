@@ -103,6 +103,10 @@ html, body, .stApp, p, label, h1, h2, h3, h4, li, input, textarea { font-family:
   background: linear-gradient(rgba(2,3,10,.30), rgba(2,3,10,.55)), url("__BG__") center / cover fixed;
 }
 header[data-testid="stHeader"] { background: transparent; }
+.stAppDeployButton, #MainMenu, [data-testid="stMainMenu"] { display: none; }
+/* hide every scroll bar but keep scrolling working */
+* { scrollbar-width: none; -ms-overflow-style: none; }
+*::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .block-container { padding-top: 3rem; max-width: 1400px; }
 section[data-testid="stSidebar"] > div {
   background: rgba(8,12,28,.72); backdrop-filter: blur(12px);
